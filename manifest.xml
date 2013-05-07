@@ -1,0 +1,22 @@
+<package>
+  <description brief="pf_drone_state_estimation">
+
+     pf_drone_state_estimation
+
+  </description>
+  <author>Akshay</author>
+  <license>BSD</license>
+  <review status="unreviewed" notes=""/>
+  <url>http://ros.org/wiki/pf_drone_state_estimation</url>
+  <depend package="image_transport"/>
+  <depend package="roscpp"/>
+  <depend package="std_msgs"/>
+  <depend package="opencv2"/>
+  <depend package="cv_bridge"/>
+  <depend package="uvc_camera"/>
+  <depend package="visualization_msgs"/>
+  <depend package="geometry_msgs"/>
+
+</package>
+
+
