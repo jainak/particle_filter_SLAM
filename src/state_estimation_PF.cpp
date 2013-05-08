@@ -307,7 +307,7 @@ void start_particle_filter(const std_msgs::String::ConstPtr& cmd){
 			
 			//Assign weight to every particle based on closeness of predicted measurement
 			weight_p.push_back(assign_weight(particle_update.at(i)));
-			particle_update.weight = weight_p.at(i);
+			particle_update.at(i).weight = weight_p.at(i);
 		}
 		
 		//Normalize weights for resampling
