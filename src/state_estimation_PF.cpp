@@ -15,9 +15,11 @@
 #include <cv_bridge/cv_bridge.h>
 
 #include <visualization_msgs/Marker.h>
+#include <std_msgs/String.h>
 #include <geometry_msgs/Point.h>
 #include <geometry_msgs/PoseStamped.h>
 #include "sensor_msgs/image_encodings.h"
+#include <pf_drone_state_estimation/Measurement_data.h>
 #include <stdexcept>
 
 #include <cmath>
@@ -50,6 +52,10 @@ using namespace sensor_msgs::image_encodings;
 using namespace std;
 using namespace cv;
 
+
+ros::Publisher map_pub;
+ros::Publisher pose_pub;
+
 geometry_msgs::PoseStamped x;	//initial pose
 double x_state_noise = 0.5;  	//state estimation noise
 double x_meas_noise = 0.5;   	//measurement noise
@@ -60,7 +66,7 @@ double timeSteps = T/delta_T;	//no. of time steps
 
 double V = 2;      				//variance of initial estimate
 vector<geometry_msgs::PoseStamped> x_out;   //vector of particles positions from motion model
-vector<geometry_msg::Point> z_out;   		//vector of measurements made
+vector<geometry_msgs::Point> z_out;   		//vector of measurements made
 geometry_msgs::PoseStamped x_est;   		//particles' estimated position 
 vector<geometry_msgs::PoseStamped> x_est_out;   //vector of particles' estimated position 
 visualization_msgs::Marker map_est;			//Estimated map to be plotted
@@ -70,7 +76,6 @@ typedef boost::normal_distribution<float> 	Distribution;   // Normal Distributio
 typedef boost::variate_generator<Engine,Distribution> 	Generator;    // Variate generator
 Engine  eng;
 
-
 /**************************************
 Define Feature and Particle class
 **************************************/
@@ -78,20 +83,21 @@ class Feature{
 	
 public:
 	//geometry_msgs::PoseStamped r_pose;
-	//Point2D p0;
+	//Point p0;
 	
 	//2D pixel point of the feture
-	Point2D pt;
+	Point pt;
 	//Sift/Surf keypoint data			
 	KeyPoint data;
 	//3D position of the feature		
 	geometry_msgs::Point position;	
 		
-	void initiate(geometry_msgs::PoseStamped p, Point2D k0, Point2D k1, KeyPoint feat_data){
-		r_pose = p;
-		p0 = k0;
+	void initiate(geometry_msgs::PoseStamped p, Point k0, Point k1, KeyPoint feat_data, geometry_msgs::Point pos){
+		//r_pose = p;
+		//p0 = k0;
 		pt = k1;
 		data = feat_data;
+		position = pos;
 	}
 };
 
@@ -99,7 +105,7 @@ class Particle{
 	
 public:
 	//robot pose
-	geometry_msg::PoseStamped r_pose;
+	geometry_msgs::PoseStamped r_pose;
 	
 	//list fo features last seen 	
 	vector<Feature> features;			
@@ -109,12 +115,12 @@ public:
 	visualization_msgs::Marker map;
 	
 	//list of 2D pixels where the the last seen features are predicted to be visible		
-	vector<geometry_msg::Point> meas_update;
+	vector<Point> meas_update;
 	
 	//weight for particle assigned after every measurement prediction	
 	float weight;		
 	
-	void intialize_pose(geometry_msg::PoseStamped x_in){
+	void initialize_pose(geometry_msgs::PoseStamped x_in){
 		r_pose = x_in;
 	}
 	
@@ -126,7 +132,7 @@ public:
 /************************************
 Define global vars for PF
 ************************************/
-geometry_msg::PoseStamped robot_pose;
+geometry_msgs::PoseStamped robot_pose;
 vector<Particle> x_P;
 vector<Feature> last_reading;
 
@@ -139,7 +145,15 @@ Mat plot = Mat::zeros( 720, 720, CV_8UC3 );
 Initialize robot pose from extrinsic calibration
 *************************************/
 void initialize_robot_pose(const geometry_msgs::PoseStamped::ConstPtr& p){
-	x = p;
+	x.pose.position.x = p->pose.position.x;
+	x.pose.position.y = p->pose.position.y;
+	x.pose.position.z = p->pose.position.z;
+	
+	x.pose.orientation.x = p->pose.orientation.x;
+	x.pose.orientation.y = p->pose.orientation.y;
+	x.pose.orientation.z = p->pose.orientation.z;
+	x.pose.orientation.w = p->pose.orientation.w;
+	
 }
 /*
 void initialize_measurements(){
@@ -165,7 +179,7 @@ void initialize_particles(){
 	cout << "Initial particle positions:" << endl;
 	for(int i =0; i<N; i++){
 		//double pos_with_uncertainty = NormalDistribution(x, V);
-		geometry_msg::PoseStamped init_pose;
+		geometry_msgs::PoseStamped init_pose;
 		init_pose.pose.position.x = x.pose.position.x + gen();
 		init_pose.pose.position.y = x.pose.position.y + gen();
 		init_pose.pose.position.z = x.pose.position.z + gen();
@@ -196,8 +210,22 @@ geometry_msgs::PoseStamped motion_model_output(geometry_msgs::PoseStamped x_t, d
 /************************************
 Callback function for subscribing to measurements from measurement model
 *************************************/
-void get_measurements(const vector<Feature>::ConstPtr& feat){
-	last_reading = feat;
+void get_measurements(const pf_drone_state_estimation::Measurement_data::ConstPtr& data){
+	vector<pf_drone_state_estimation::Feature_msg> feat = data->features;
+	last_reading.clear();
+	for(int i = 0; i< feat.size(); i++){
+		Feature reading;
+		reading.pt.x = feat.at(i).px;
+		reading.pt.y = feat.at(i).py;
+		
+		reading.data = KeyPoint(Point(feat.at(i).f.x,feat.at(i).f.y),feat.at(i).f.size, feat.at(i).f.angle, feat.at(i).f.response, feat.at(i).f.octave, feat.at(i).f.class_id);
+		
+		reading.position.x = feat.at(i).posX;
+		reading.position.y = feat.at(i).posY;
+		reading.position.z = feat.at(i).posZ;
+		
+		last_reading.push_back(reading);
+	}
 }
 
 double measurement_model_output(double x_t_1){
@@ -226,9 +254,10 @@ geometry_msgs::PoseStamped predict_position_particles(Particle p, geometry_msgs:
 /************************************
 Measurement prediction of all particles given the set of action at time t
 *************************************/
-vector<Pont2D> predict_measurement_particles(geometry_msgs::PoseStamped curr_pose, Particle p_update){
-
-	double meas = pow(x_t_1,2)/20.0;
+vector<Point> predict_measurement_particles(geometry_msgs::PoseStamped curr_pose, Particle p_update){
+	vector<Point> meas;
+	
+	
 	return meas;
 }
 
@@ -246,17 +275,35 @@ Estimate robot pose from resampled particles
 *************************************/
 geometry_msgs::PoseStamped estimate_robot_pose(vector<Particle> p){
 	geometry_msgs::PoseStamped est;
-	est.pose.position.x = x.pose.position.x + gen();
-	est.pose.position.y = x.pose.position.y + gen();
-		init_pose.pose.position.z = x.pose.position.z + gen();
+	est.pose.position.x = 0;
+	est.pose.position.y = 0;
+	est.pose.position.z = 0;
 		
-		init_pose.pose.orientation.x = x.pose.orientation.x + gen();
-		init_pose.pose.orientation.y = x.pose.orientation.y + gen();
-		init_pose.pose.orientation.z = x.pose.orientation.z + gen();
-		init_pose.pose.orientation.w = x.pose.orientation.w + gen();
+	est.pose.orientation.x = 0;
+	est.pose.orientation.y = 0;
+	est.pose.orientation.z = 0;
+	est.pose.orientation.w = 0;
 	for(int i = 0; i < N; i++ ){
+		est.pose.position.x += p.at(i).r_pose.pose.position.x;
+		est.pose.position.y += p.at(i).r_pose.pose.position.y;
+		est.pose.position.z += p.at(i).r_pose.pose.position.z;
 		
+		est.pose.orientation.x += p.at(i).r_pose.pose.orientation.x;
+		est.pose.orientation.y += p.at(i).r_pose.pose.orientation.y;
+		est.pose.orientation.z += p.at(i).r_pose.pose.orientation.z;
+		est.pose.orientation.w += p.at(i).r_pose.pose.orientation.w;
 	}
+	
+	est.pose.position.x = est.pose.position.x/N;
+	est.pose.position.y = est.pose.position.y/N;
+	est.pose.position.z = est.pose.position.z/N;
+	
+	est.pose.orientation.x = est.pose.orientation.x/N;
+	est.pose.orientation.y = est.pose.orientation.y/N;
+	est.pose.orientation.z = est.pose.orientation.z/N;
+	est.pose.orientation.w = est.pose.orientation.w/N;
+	
+	return est;
 }
 
 
@@ -290,7 +337,7 @@ void start_particle_filter(const std_msgs::String::ConstPtr& cmd){
 		actual_meas = last_reading;
 		
 		vector<Particle> particle_update;	//predicted particles
-		vector<Point2D> meas_update;
+		//vector<Point> meas_update;
 		vector<double> weight_p;
 		
 		//Predict position and measurements for all particles
@@ -298,36 +345,35 @@ void start_particle_filter(const std_msgs::String::ConstPtr& cmd){
 			particle_update.push_back(x_P.at(i));
 			
 			//Update position of particle based on given actions: Motion prediction model
-			particle_update.r_pose = predict_position_particles(x_P.at(i), x, i);
-			particle_update.at(i).feature = actual_meas;
+			particle_update.at(i).r_pose = predict_position_particles(x_P.at(i), x, i);
+			particle_update.at(i).features = actual_meas;
 			
 			//Update measurements of particle using giving actions: Measurement prediction model
-			meas_update = predict_measurement_particles(x, particle_update.at(i));
-			particle_update.at(i).meas_update = meas_update;
+			particle_update.at(i).meas_update = predict_measurement_particles(x, particle_update.at(i));
 			
 			//Assign weight to every particle based on closeness of predicted measurement
-			weight_p.push_back(assign_weight(particle_update.at(i)));
-			particle_update.at(i).weight = weight_p.at(i);
+			particle_update.at(i).weight = assign_weight(particle_update.at(i));
 		}
 		
 		//Normalize weights for resampling
 		double w_sum = 0;
 		for(int i =0; i<N; i++)
-			w_sum += weight_p.at(i);
+			w_sum += particle_update.at(i).weight;
 		
+		//Calculate cumulative weights
 		vector<double> cum_weights;
 		for(int i =0; i<N; i++){
-			weight_p.at(i) = weight_p.at(i)/w_sum;
+			particle_update.at(i).weight = particle_update.at(i).weight/w_sum;
 			if (i == 0)
-				cum_weights.push_back(weight_p.at(i));
+				cum_weights.push_back(particle_update.at(i).weight);
 			else
-				cum_weights.push_back(cum_weights.at(i-1) + weight_p.at(i));
+				cum_weights.push_back(cum_weights.at(i-1) + particle_update.at(i).weight);
 		}
 		
 		//Get estimation x_est of quadrotor's local position
 		
 		//x_est = mean(uniform_distributed sample set)
-		x_est = x;
+		//x_est = x;
 		//Uni_Dist dist(0.0,1.0);
 		//Uni_Gen gen(eng, dist);
 		
@@ -348,25 +394,36 @@ void start_particle_filter(const std_msgs::String::ConstPtr& cmd){
 			}
 		}
 		
+		//Get robot estimated position
 		x_est = estimate_robot_pose(x_P);
+		pose_pub.publish(x_est);
+		//Update world map for all particles
+		for(int i=0; i<N; i++){
+			for(int j=0; j<x_P.at(i).features.size(); j++){
+				x_P.at(i).map.points.push_back(x_P.at(i).features.at(j).position); 
+			}
+		}
+		map_pub.publish(x_P.at(0).map);
+		
 		//x_est += x_P.at(i);
 		//x_est /= N;
 		
 		//estimated position - green
-		circle(plot, Point(t*delta_T*10, 360 + x_est*20 ), 1, Scalar(0,255,0), -1,8);
+		//circle(plot, Point(t*delta_T*10, 360 + x_est*20 ), 1, Scalar(0,255,0), -1,8);
 		//actual measurement - Blue
-		circle(plot, Point(t*delta_T*10, 200 + actual_meas*20 ), 1, Scalar(255,0,0), -1,8);
+		//circle(plot, Point(t*delta_T*10, 200 + actual_meas*20 ), 1, Scalar(255,0,0), -1,8);
 		//motion model prediction - pink
-		circle(plot, Point(t*delta_T*10, 360 + x*20 ), 1, Scalar(255,0,255), -1,8);
+		//circle(plot, Point(t*delta_T*10, 360 + x*20 ), 1, Scalar(255,0,255), -1,8);
 		//circle(plot, Point(t, 100.0), 5, Scalar(255,255,0), -1,8);
 		
-		imshow("GRAPH",plot);
-		waitKey(3);
+		//imshow("GRAPH",plot);
+		//waitKey(3);
 		x_out.push_back(x);
-		z_out.push_back(actual_meas);
+		for(int a = 0; a < actual_meas.size(); a++)
+			z_out.push_back(actual_meas.at(a).position);
 		x_est_out.push_back(x_est);
 		
-		cout << "X_est:\t" << x_est << endl;
+		//cout << "X_est:\t" << x_est << endl;
 		//cout << "X_actual:\t" << x << endl;
 		//cout << "X_est:\t" << x_est << endl;
 		
@@ -378,16 +435,13 @@ void start_particle_filter(const std_msgs::String::ConstPtr& cmd){
   }
 }
 
-ros::Publisher map_pub;
-ros::Publisher pose_pub;
-
 int main(int argc, char** argv){
 
 	ros::init(argc, argv, "particle_filter");
 	ros::NodeHandle nh;
 	
 	ROS_INFO("Start Particle filter...");
-	namedWindow("GRAPH", CV_WINDOW_AUTOSIZE);
+	//namedWindow("GRAPH", CV_WINDOW_AUTOSIZE);
 		
 	map_pub = nh.advertise<visualization_msgs::Marker>("/points_map",1);
 	pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/pose_est",1);
@@ -397,7 +451,7 @@ int main(int argc, char** argv){
 	ros::Subscriber get_meas = nh.subscribe("/init_pose", 1000, get_measurements);
 	//start_particle_filter();
 	
-	destroyWindow("GRAPH");
+	//destroyWindow("GRAPH");
 	ros::spin();
 	//ROS_INFO is the replacement for printf/cout.
 	ROS_INFO("particle_filter::main.cpp::No error.");
