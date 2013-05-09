@@ -446,9 +446,9 @@ int main(int argc, char** argv){
 	map_pub = nh.advertise<visualization_msgs::Marker>("/points_map",1);
 	pose_pub = nh.advertise<geometry_msgs::PoseStamped>("/pose_est",1);
 	
-	ros::Subscriber init_command = nh.subscribe("/sys_init", 1000, start_particle_filter);
-	ros::Subscriber init_pose = nh.subscribe("/init_pose", 1000, initialize_robot_pose);
-	ros::Subscriber get_meas = nh.subscribe("/init_pose", 1000, get_measurements);
+	ros::Subscriber init_command = nh.subscribe("/stop_init", 1000, start_particle_filter);
+	ros::Subscriber init_pose = nh.subscribe("/init_pose_ardrone", 1000, initialize_robot_pose);
+	ros::Subscriber get_meas = nh.subscribe("/measurement_data", 1000, get_measurements);
 	//start_particle_filter();
 	
 	//destroyWindow("GRAPH");
